@@ -1,0 +1,200 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Code Pipeline
+Parameters:
+
+  ##Artifact bucket
+  ArtifactBucket:
+    Description: S3 Bucket, which will hold the artifacts
+    Default: myweb-artifacts
+    Type: String
+
+  ##Deployment account details:
+    Description: AWS AccountNumber
+    Default: XXXXXXXXXXX
+    Type: Number
+
+  ##Folder scripts are stored
+  FormationScriptDeploymentScriptFolder:
+    Type: String
+    Default: deployment-scripts
+    Description: Repository formation script
+
+Resources:  
+  BuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: MyWeb
+      Description: MyWeb pipeline
+      ServiceRole: !Sub IAM-ROLE-CodeBuild
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: linuxContainer
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:3.0
+        EnvironmentVariables:
+          - Name: ArtifactBucket
+            Value: !Ref ArtifactBucket
+          - Name: KMSKey
+            Value: !Ref CMKARN
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: | 
+          version: 0.2
+          phases:
+            install:
+              runtime-versions:
+                python: 3.8
+            pre_build:
+              commands:
+                - 'sed -i -e "s/GatewayDeployment/GatewayDeployment$HASH/g" cfn_template.yaml'
+            build:
+              commands:
+                - echo ${ArtifactBucket}
+                - aws cloudformation package --template-file cfn_template.yaml --s3-bucket ${ArtifactBucket} --s3-prefix lambdarepo --output-template-file cfn_template.yaml
+
+          artifacts:
+            files: 
+              - cfn_template.yaml
+            discard-paths: yes
+
+      TimeoutInMinutes: 10
+
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline    
+    Properties:
+      RoleArn: !Sub arn:aws:iam::${Account}:role/IAM-ROLE-CodePipeline
+      Name: MyWeb Pipeline
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: LoadSources
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Version: 1
+                Provider: CodeCommit
+              Configuration:
+                RepositoryName: MyWeb
+                BranchName: master
+              OutputArtifacts:
+                - Name: CheckoutArtifact
+              RunOrder: 1           
+              RoleArn: !Sub arn:aws:iam::${Account}:role/IAM-ROLE-CodeCommit  
+
+        - Name: Build
+          Actions:
+          -
+            Name: Deploy
+            ActionTypeId:
+              Category: Build
+              Owner: AWS
+              Version: 1
+              Provider: CodeBuild
+            Configuration:
+              ProjectName: !Ref BuildProject
+            RunOrder: 1
+            InputArtifacts:
+              - Name: CheckoutArtifact
+            OutputArtifacts:
+              - Name: BuildOutput
+          
+        - Name: DEV
+          Actions:
+            - Name: SonarCheck
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: 1
+                Provider: CodeBuild
+              Configuration:
+                ProjectName: !Ref SonarCI
+              RunOrder: 1
+              InputArtifacts:
+                - Name: CheckoutArtifact
+
+            - Name: UploadChangeSet-DEV
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: 1
+                Provider: CloudFormation
+              Configuration:
+                ChangeSetName: !Sub ${ServiceName}-dev
+                ActionMode: CHANGE_SET_REPLACE
+                StackName: !Sub ${ServiceName}-dev
+                Capabilities: CAPABILITY_NAMED_IAM
+                TemplatePath: BuildOutput::cfn_template.yaml
+                RoleArn: !Sub arn:aws:iam::${Account}:role/IAM-ROLE-PipelineCloudformation-N
+                ParameterOverrides: !Sub |
+                  {                     
+                      "PhServiceName": "${ServiceName}",
+                      "PhServiceTag": "general"                
+                  }
+              InputArtifacts:
+                - Name: BuildOutput
+              RunOrder: 2   
+              RoleArn: !Sub arn:aws:iam::${Account}:role/IAM-ROLE-CodePipeline-N
+
+            - Name: DeployChangeSet-DEV
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: 1
+                Provider: CloudFormation
+              Configuration:
+                ChangeSetName: !Sub ${ServiceName}-dev
+                ActionMode: CHANGE_SET_EXECUTE
+                StackName: !Sub ${ServiceName}-dev
+                RoleArn: !Sub arn:aws:iam::${Account}:role/IAM-ROLE-PipelineCloudformation-N
+                ParameterOverrides: !Sub |
+                  {                     
+                      "PhServiceName": "${ServiceName}",
+                      "PhServiceTag": "general", 
+              InputArtifacts:
+                - Name: BuildOutput 
+              RunOrder: 3             
+              RoleArn: !Sub arn:aws:iam::${Account}:role/IAM-ROLE-CodePipeline-N     
+
+  PipelineRelease:
+    Type: AWS::CodePipeline::Pipeline    
+    Properties:
+      RoleArn: !Sub arn:aws:iam::${Account}:role/IAM-ROLE-CodePipeline
+      Name: !Sub ${ServiceName}-release-pipeline
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: LoadSources
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Version: 1
+                Provider: CodeCommit
+              Configuration:
+                RepositoryName: !Ref ServiceName
+                BranchName: release
+              OutputArtifacts:
+                - Name: CheckoutArtifact
+              RunOrder: 1           
+              RoleArn: !Sub arn:aws:iam::${Account}:role/IAM-ROLE-CodeCommit  
+
+        - Name: Build
+          Actions:
+          -
+            Name: Build
+            ActionTypeId:
+              Category: Build
+              Owner: AWS
+              Version: 1
+              Provider: CodeBuild
+            Configuration:
+              ProjectName: !Ref BuildProject
+            RunOrder: 1
+            InputArtifacts:
+              - Name: CheckoutArtifact
+            OutputArtifacts:
+              - Name: BuildOutput
+          
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
