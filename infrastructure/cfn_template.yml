@@ -1,0 +1,323 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Offline Location Service
+
+Parameters:
+
+Mappings:
+    EnvironmentMap:
+        DataTraceEnabled: false
+        MetricsEnabled: false
+
+Resources:
+  GatewayRestAPI:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: MyWeb
+      MinimumCompressionSize: 0
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+  GatewayResourceEvents:   
+    Type: AWS::ApiGateway::Resource   
+    Properties:   
+      RestApiId:   
+        Ref: "GatewayRestAPI"   
+      ParentId:   
+        Fn::GetAtt:   
+          - "GatewayRestAPI"   
+          - "RootResourceId"   
+      PathPart: "events"
+      
+  EmployeeTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: MyWebTable
+      AttributeDefinitions:
+        - 
+          AttributeName: !Ref HashKeyElementName
+          AttributeType: !Ref HashKeyElementType
+      KeySchema:
+        - 
+          AttributeName: !Ref HashKeyElementName
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5 
+
+##################METHOD############### 
+      
+  GatewayMethodEventsPOST:     
+    Type: AWS::ApiGateway::Method     
+    Properties:     
+      HttpMethod: POST
+      ResourceId: !Ref GatewayResourceEvents
+      RestApiId: !Ref GatewayRestAPI 
+      RequestParameters:     
+        method.request.header.Accept:           false     
+        method.request.header.Accept-Encoding:  false     
+
+      Integration:     
+        Type: AWS_PROXY 
+        TimeoutInMillis: 10000
+        IntegrationHttpMethod: POST  
+        PassthroughBehavior: NEVER     
+        Uri: !Sub     
+          - "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaArn}/invocations"     
+          - LambdaArn: !GetAtt "LambdaFunctionEvents.Arn"   
+    
+        IntegrationResponses:     
+          -      
+            StatusCode: 200     
+            ResponseParameters:     
+              method.response.header.Cache-Control: "'no-cache, no-store, private'"       
+              method.response.header.Edge-Control: "'no-cache, no-store, must-revalidate'" 
+     
+      MethodResponses:     
+        -     
+          StatusCode: 200     
+          ResponseModels:     
+            application/json: Empty     
+          ResponseParameters:     
+            method.response.header.Cache-Control:  true
+            method.response.header.Edge-Control:  true
+        -     
+          StatusCode: "400"     
+          ResponseParameters:     
+            method.response.header.Cache-Control:  true
+          ResponseModels:     
+              "application/json": "Empty"     
+        -     
+          StatusCode: "404"     
+          ResponseParameters:  
+            method.response.header.Cache-Control:  true
+          ResponseModels:     
+              "application/json": "Empty" 
+        -     
+          StatusCode: "406"     
+          ResponseParameters:     
+            method.response.header.Cache-Control:  true
+          ResponseModels:     
+              "application/json": "Empty" 
+        -     
+          StatusCode: "415"     
+          ResponseParameters:  
+            method.response.header.Cache-Control:  true
+          ResponseModels:     
+              "application/json": "Empty"         
+        -     
+          StatusCode: "500"     
+          ResponseParameters:  
+            method.response.header.Cache-Control:  true
+          ResponseModels:     
+              "application/json": "Empty"    
+
+##########LAMBDA#########  
+  
+  LambdaLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      CompatibleRuntimes:
+        - python3.8
+      Content: ./lambda_layer
+      LayerName: "LambdaLayer"  
+  
+  LambdaFunctionEvents:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code: ./events/
+      FunctionName: !Sub "lambdaFunctionEvents"
+      Handler: "lambda_function.lambda_handler"
+      Role: !GetAtt RoleLambdaFuction.Arn
+      Runtime: "python3.8"
+      Environment: 
+          Variables:
+            LogLevel: 10
+      MemorySize: 512
+      Timeout: 10
+      Layers:
+        - !Ref LambdaLayer
+
+  LambdaEventRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action:
+              - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+        Version: '2012-10-17'
+      Path: /
+      RoleName: !Sub "LambdaEventIamRole"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      Policies:
+      - PolicyName: "root"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: "Allow"
+                Action:
+                  - "dynamodb:DescribeTable"
+                Resource: "*"
+        
+  LambdaEventPermission:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt
+        - LambdaFunctionEvents
+        - Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Join
+        - ''
+        -
+          - 'arn:aws:execute-api:'
+          - !Ref 'AWS::Region'
+          - ':'
+          - !Ref 'AWS::AccountId'
+          - ':'
+          - !Ref GatewayRestAPI
+          - "/*"
+  
+##############DEPLOYMENT##############
+
+  GatewayDeployment:     
+    Type: AWS::ApiGateway::Deployment
+    Properties:       
+      RestApiId: !Ref GatewayRestAPI       
+      Description: "MyWeb Deployment"
+    DependsOn:        
+      - GatewayMethodEventsPOST      
+
+  GatewayStage:       
+    Type: AWS::ApiGateway::Stage       
+    Properties:       
+      DeploymentId: !Ref GatewayDeployment  
+      MethodSettings:       
+       - ResourcePath: "/*"       
+         HttpMethod: "*"       
+         LoggingLevel: INFO       
+         DataTraceEnabled: true       
+         MetricsEnabled: true       
+
+      RestApiId: !Ref GatewayRestAPI
+      StageName: "dev-stg" 
+      TracingEnabled: true
+
+  ApiUsagePlan: 
+    Type: 'AWS::ApiGateway::UsagePlan' 
+    Properties: 
+      ApiStages: 
+        - ApiId: !Ref GatewayRestAPI 
+          Stage: !Ref GatewayStage           
+      Description: !Sub "Usage Plan for ${PhServiceName} ${PhServiceEnvironment} environment"
+      Quota: 
+        Limit: 1000 
+        Period: MONTH 
+      Throttle: 
+        BurstLimit: 500 
+        RateLimit: 10 
+      UsagePlanName: "UsagePlanEvent"
+
+
+##############RESPONSE################
+  
+  GatewayResponseDefault4XX:       
+    Type: AWS::ApiGateway::GatewayResponse       
+    Properties:       
+      ResponseParameters:       
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"       
+      ResponseTemplates:       
+        "application/json" : !Sub       
+          - '{ "errors": [ { "id": "$context.requestId", "status": "${Status}", "code": "${Code}", "title": $context.error.messageString } ] }'       
+          - Code: DEFAULT_4XX       
+            Status: 400       
+      ResponseType: DEFAULT_4XX       
+      RestApiId: !Ref GatewayRestAPI       
+       
+  GatewayResponseDefault5XX:       
+    Type: AWS::ApiGateway::GatewayResponse       
+    Properties:       
+      ResponseParameters:       
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"       
+      ResponseTemplates:       
+        "application/json" : !Sub       
+          - '{ "errors": [ { "id": "$context.requestId", "status": "${Status}", "code": "${Code}", "title": $context.error.messageString } ] }'       
+          - Code: "DEFAULT_5XX"       
+            Status: 500       
+      ResponseType: DEFAULT_5XX       
+      RestApiId: !Ref GatewayRestAPI       
+       
+  GatewayResponseAccessDenied:       
+    Type: AWS::ApiGateway::GatewayResponse       
+    Properties:       
+      ResponseParameters:       
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"       
+      ResponseTemplates:       
+        "application/json" : !Sub       
+          - '{ "errors": [ { "id": "$context.requestId", "status": "${Status}", "code": "${Code}", "title": $context.error.messageString } ] }'       
+          - Code: "ACCESS_DENIED"       
+            Status: 403       
+      ResponseType: ACCESS_DENIED       
+      RestApiId: !Ref GatewayRestAPI       
+      StatusCode: 403 
+      
+  GatewayResponseIntegrationTimeout:       
+    Type: AWS::ApiGateway::GatewayResponse       
+    Properties:       
+      ResponseParameters:       
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"       
+      ResponseTemplates:       
+        "application/json" : !Sub       
+          - '{ "errors": [ { "id": "$context.requestId", "status": "${Status}", "code": "${Code}", "title": $context.error.messageString } ] }'       
+          - Code: "INTEGRATION_TIMEOUT"       
+            Status: 504       
+      ResponseType: INTEGRATION_TIMEOUT       
+      RestApiId: !Ref GatewayRestAPI       
+      StatusCode: 504 
+
+  GatewayResponseQuotaExceeded:       
+    Type: AWS::ApiGateway::GatewayResponse       
+    Properties:       
+      ResponseParameters:       
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"       
+      ResponseTemplates:       
+        "application/json" : !Sub       
+          - '{ "errors": [ { "id": "$context.requestId", "status": "${Status}", "code": "${Code}", "title": $context.error.messageString } ] }'       
+          - Code: "QUOTA_EXCEEDED"       
+            Status: 429       
+      ResponseType: QUOTA_EXCEEDED       
+      RestApiId: !Ref GatewayRestAPI       
+      StatusCode: 429       
+      
+  GatewayResponseResourceNotFound:       
+    Type: AWS::ApiGateway::GatewayResponse       
+    Properties:       
+      ResponseParameters:       
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"       
+      ResponseTemplates:       
+        "application/json" : !Sub       
+          - '{ "errors": [ { "id": "$context.requestId", "status": "${Status}", "code": "${Code}", "title": $context.error.messageString } ] }'       
+          - Code: "RESOURCE_NOT_FOUND"       
+            Status: 404       
+      ResponseType: RESOURCE_NOT_FOUND       
+      RestApiId: !Ref GatewayRestAPI       
+      StatusCode: 404       
+       
+  GatewayResponseThrottled:       
+    Type: AWS::ApiGateway::GatewayResponse       
+    Properties:       
+      ResponseParameters:       
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"       
+      ResponseTemplates:       
+        "application/json" : !Sub       
+          - '{ "errors": [ { "id": "$context.requestId", "status": "${Status}", "code": "${Code}", "title": $context.error.messageString } ] }'       
+          - Code: "THROTTLED"       
+            Status: 429       
+      ResponseType: THROTTLED       
+      RestApiId: !Ref GatewayRestAPI       
+      StatusCode: 429
