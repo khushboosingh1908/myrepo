@@ -1,12 +1,12 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Offline Location Service
+Description: Ecomm Web Service
 
 Parameters:
 
 Mappings:
     EnvironmentMap:
-        DataTraceEnabled: false
-        MetricsEnabled: false
+        DataTraceEnabled: true
+        MetricsEnabled: true
 
 Resources:
   GatewayRestAPI:
@@ -127,7 +127,7 @@ Resources:
       Code: ./events/
       FunctionName: !Sub "lambdaFunctionEvents"
       Handler: "lambda_function.lambda_handler"
-      Role: !GetAtt RoleLambdaFuction.Arn
+      Role: !GetAtt LambdaEventRole.Arn
       Runtime: "python3.8"
       Environment: 
           Variables:
@@ -149,10 +149,9 @@ Resources:
               Service:
                 - lambda.amazonaws.com
         Version: '2012-10-17'
-      Path: /
-      RoleName: !Sub "LambdaEventIamRole"
       ManagedPolicyArns:
         - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+        - "arn:aws:iam::aws:policy/service-role/CloudWatchFullAccess"
       Policies:
       - PolicyName: "root"
           PolicyDocument:
@@ -213,8 +212,7 @@ Resources:
     Properties: 
       ApiStages: 
         - ApiId: !Ref GatewayRestAPI 
-          Stage: !Ref GatewayStage           
-      Description: !Sub "Usage Plan for ${PhServiceName} ${PhServiceEnvironment} environment"
+          Stage: !Ref GatewayStage
       Quota: 
         Limit: 1000 
         Period: MONTH 
