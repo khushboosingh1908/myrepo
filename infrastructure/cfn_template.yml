@@ -28,17 +28,17 @@ Resources:
           - "RootResourceId"   
       PathPart: "events"
       
-  EmployeeTable:
+  MyWebTable:
     Type: AWS::DynamoDB::Table
     Properties:
       TableName: MyWebTable
       AttributeDefinitions:
         - 
-          AttributeName: !Ref HashKeyElementName
-          AttributeType: !Ref HashKeyElementType
+          AttributeName: 'itemId'
+          AttributeType: 'S'
       KeySchema:
         - 
-          AttributeName: !Ref HashKeyElementName
+          AttributeName: 'itemId'
           KeyType: HASH
       ProvisionedThroughput:
         ReadCapacityUnits: 5
