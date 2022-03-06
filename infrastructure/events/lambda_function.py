@@ -1,25 +1,17 @@
 import json
 import boto3
 
-client = boto3.client('dynamodb')
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table('MyWebTable')
 
-def handler(event, context):
-  data = client.get_item(
-    TableName='MyWebTable',
-    Key={
-        'id': {
-          'a': '005'
-        }
-    }
-  )
+def lambda_handler(event, context):
+  itemid = event['queryStringParameter']['itemid']
+  
+  result = table.get_item(Key={'itemId': itemid})
 
   response = {
       'statusCode': 200,
-      'body': json.dumps(data),
-      'headers': {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*'
-      },
+      'body': json.dumps(response)
   }
   
   return response
